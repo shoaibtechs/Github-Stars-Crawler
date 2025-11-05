@@ -1,0 +1,82 @@
+name: GitHub Crawler
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *' # daily at 02:00 UTC (example)
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      # GITHUB_TOKEN is automatically available
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: github_data
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" 
+          --health-interval 10s 
+          --health-timeout 5s 
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..20}; do
+            pg_isready -h localhost -p 5432 -U postgres && break
+            echo "waiting for postgres..."
+            sleep 2
+          done
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Create schema in Postgres
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d github_data -f schema.sql
+
+      - name: Run crawler
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: github_data
+          DB_USER: postgres
+          DB_PASS: postgres
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPOS: 1000  # for demo runs you can set to 1000; change to 100000 in final runs
+        run: |
+          node crawler.js
+
+      - name: Dump DB to CSV
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: github_data
+          DB_USER: postgres
+          DB_PASS: postgres
+        run: |
+          node dump.js
+          ls -la
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repos-dump
+          path: repos_dump.csv
